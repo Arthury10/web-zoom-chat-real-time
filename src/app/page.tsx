@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { io } from "socket.io-client";
 
-const socket = io("ws://154.56.41.117:4000");
+const socket = io("wss://arthurropke.com");
 
 export default function Home() {
   const [messages, setMessages] = useState<string[]>([]);
