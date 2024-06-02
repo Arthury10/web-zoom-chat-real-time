@@ -1,112 +1,170 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState, useRef } from "react";
+import { io } from "socket.io-client";
+
+const socket = io("ws://localhost:4000");
 
 export default function Home() {
+  const [messages, setMessages] = useState<string[]>([]);
+  const [message, setMessage] = useState<string>("");
+  const [isAudioEnabled, setIsAudioEnabled] = useState<boolean>(true);
+  const [isVideoEnabled, setIsVideoEnabled] = useState<boolean>(true);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const peerConnection = useRef<RTCPeerConnection | null>(null);
+  const localStream = useRef<MediaStream | null>(null);
+
+  useEffect(() => {
+    socket.on("connect", () => {
+      console.log("connected");
+    });
+
+    socket.on("disconnect", () => {
+      console.log("disconnected");
+    });
+
+    socket.on("offer", async (id, description) => {
+      if (peerConnection.current) {
+        await peerConnection.current.setRemoteDescription(description);
+        const answer = await peerConnection.current.createAnswer();
+        await peerConnection.current.setLocalDescription(answer);
+        socket.emit("answer", id, peerConnection.current.localDescription);
+      }
+    });
+
+    socket.on("answer", (description) => {
+      if (peerConnection.current) {
+        peerConnection.current.setRemoteDescription(description);
+      }
+    });
+
+    socket.on("candidate", (id, candidate) => {
+      if (peerConnection.current) {
+        peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    socket.on("receiveMessage", (msg) => {
+      setMessages((prev) => [...prev, msg]);
+    });
+
+    return () => {
+      if (peerConnection.current) {
+        peerConnection.current.close();
+      }
+      socket.off("receiveMessage");
+      socket.off("offer");
+      socket.off("answer");
+      socket.off("candidate");
+    };
+  }, []);
+
+  const setupWebRTC = async () => {
+    peerConnection.current = new RTCPeerConnection();
+
+    peerConnection.current.onicecandidate = event => {
+      if (event.candidate) {
+        socket.emit("candidate", event.candidate);
+      }
+    };
+
+    peerConnection.current.ontrack = event => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      }
+    };
+
+    localStream.current = await navigator.mediaDevices.getUserMedia({ video: isVideoEnabled, audio: isAudioEnabled });
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStream.current;
+    }
+
+    localStream.current.getTracks().forEach(track => {
+      if (peerConnection.current && localStream.current) {
+        peerConnection.current.addTrack(track, localStream.current);
+      }
+    });
+
+    const offer = await peerConnection.current.createOffer();
+    await peerConnection.current.setLocalDescription(offer);
+    socket.emit("offer", offer);
+  };
+
+  const toggleAudio = () => {
+    setIsAudioEnabled(prev => {
+      const enabled = !prev;
+      if (localStream.current) {
+        localStream.current.getAudioTracks().forEach(track => track.enabled = enabled);
+      }
+      return enabled;
+    });
+  };
+
+  const toggleVideo = () => {
+    setIsVideoEnabled(prev => {
+      const enabled = !prev;
+      if (localStream.current) {
+        localStream.current.getVideoTracks().forEach(track => track.enabled = enabled);
+      }
+      return enabled;
+    });
+  };
+
+  const startCall = () => {
+    setupWebRTC();
+  };
+
+  const sendMessage = () => {
+    socket.emit("sendMessage", message);
+    setMessage("");
+  };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <div className="z-10 w-full max-w-5xl items-center justify-between font-mono text-sm lg:flex">
-        <p className="fixed left-0 top-0 flex w-full justify-center border-b border-gray-300 bg-gradient-to-b from-zinc-200 pb-6 pt-8 backdrop-blur-2xl dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:p-4 lg:dark:bg-zinc-800/30">
-          Get started by editing&nbsp;
-          <code className="font-mono font-bold">src/app/page.tsx</code>
-        </p>
-        <div className="fixed bottom-0 left-0 flex h-48 w-full items-end justify-center bg-gradient-to-t from-white via-white dark:from-black dark:via-black lg:static lg:size-auto lg:bg-none">
-          <a
-            className="pointer-events-none flex place-items-center gap-2 p-8 lg:pointer-events-auto lg:p-0"
-            href="https://vercel.com?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            By{" "}
-            <Image
-              src="/vercel.svg"
-              alt="Vercel Logo"
-              className="dark:invert"
-              width={100}
-              height={24}
-              priority
+    <main className="flex min-h-screen flex-col items-center justify-between p-10">
+      <h1 className="text-4xl font-bold">New Xoom</h1>
+
+      <div className="w-full h-full flex justify-between items-start bg-red-400 rounded-lg">
+        <div className="flex items-start gap-2 justify-center flex-wrap">
+          <video ref={remoteVideoRef} autoPlay className="w-[600px] h-auto rounded-md"></video>
+          <video ref={localVideoRef} autoPlay muted className="w-[200px] h-auto rounded-md"></video>
+        </div>
+
+        <div className="flex flex-col items-center w-[400px] bg-gray-400 h-full p-1 rounded-r-lg">
+          <div className="flex flex-col items-center h-[600px] w-full overflow-auto">
+            {messages.map((msg, index) => (
+              <div key={index} className="border border-gray-300 rounded p-2 w-full">
+                {msg}
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-5 w-full">
+            <input
+              type="text"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              className="border border-gray-300 text-black rounded p-2 w-full"
             />
-          </a>
+            <button
+              onClick={sendMessage}
+              className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded h-full"
+            >
+              Send
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="relative z-[-1] flex place-items-center before:absolute before:h-[300px] before:w-full before:-translate-x-1/2 before:rounded-full before:bg-gradient-radial before:from-white before:to-transparent before:blur-2xl before:content-[''] after:absolute after:-z-20 after:h-[180px] after:w-full after:translate-x-1/3 after:bg-gradient-conic after:from-sky-200 after:via-blue-200 after:blur-2xl after:content-[''] before:dark:bg-gradient-to-br before:dark:from-transparent before:dark:to-blue-700 before:dark:opacity-10 after:dark:from-sky-900 after:dark:via-[#0141ff] after:dark:opacity-40 sm:before:w-[480px] sm:after:w-[240px] before:lg:h-[360px]">
-        <Image
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src="/next.svg"
-          alt="Next.js Logo"
-          width={180}
-          height={37}
-          priority
-        />
-      </div>
-
-      <div className="mb-32 grid text-center lg:mb-0 lg:w-full lg:max-w-5xl lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Find in-depth information about Next.js features and API.
-          </p>
-        </a>
-
-        <a
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Learn{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Learn about Next.js in an interactive course with&nbsp;quizzes!
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Templates{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Explore starter templates for Next.js.
-          </p>
-        </a>
-
-        <a
-          href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Deploy{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-balance text-sm opacity-50">
-            Instantly deploy your Next.js site to a shareable URL with Vercel.
-          </p>
-        </a>
+      <div className="flex space-x-4 mt-4">
+        <button onClick={startCall} className="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded">
+          Start Call
+        </button>
+        <button onClick={toggleVideo} className={`bg-${isVideoEnabled ? 'red' : 'green'}-500 hover:bg-${isVideoEnabled ? 'red' : 'green'}-700 text-white font-bold py-2 px-4 rounded`}>
+          {isVideoEnabled ? 'Stop Video' : 'Start Video'}
+        </button>
+        <button onClick={toggleAudio} className={`bg-${isAudioEnabled ? 'red' : 'green'}-500 hover:bg-${isAudioEnabled ? 'red' : 'green'}-700 text-white font-bold py-2 px-4 rounded`}>
+          {isAudioEnabled ? 'Mute' : 'Unmute'}
+        </button>
       </div>
     </main>
   );
